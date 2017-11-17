@@ -4,11 +4,14 @@
 # GPLv3 https://github.com/ansible/ansibullbot/blob/master/LICENSE
 
 import itertools
+import logging
 import os
 
 from string import Template
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 
 class BotMetadataParser(object):
@@ -20,7 +23,8 @@ class BotMetadataParser(object):
             if isinstance(inlist, list):
                 inlist = str(inlist)
             if '&' in inlist:
-                import epdb; epdb.st()
+                # import epdb; epdb.st()
+                log.error('"&" found in inlist: %s', inlist)
             inlist = inlist.replace("[", '')
             inlist = inlist.replace("]", '')
             inlist = inlist.replace("'", '')
