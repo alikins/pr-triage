@@ -29,6 +29,8 @@ from github import Github
 from datetime import datetime
 from collections import defaultdict, OrderedDict
 
+import botmetadata
+
 try:
     import pyrax
     HAS_PYRAX = True
@@ -36,7 +38,9 @@ except ImportError:
     HAS_PYRAX = False
 
 log = logging.getLogger(__name__)
-logging.basicConfig(level=logging.INFO)
+log_format = '%(asctime)s %(levelname)s %(name)s %(funcName)s - %(message)s'
+logging.basicConfig(level=logging.INFO, format=log_format)
+#logging.basicConfig(level=logging.DEBUG)
 
 
 def get_config():
@@ -73,7 +77,8 @@ def get_data_path(config):
     data_path = os.path.join(data_dir_path, data_file_name)
     return data_path
 
-def read_maintainers():
+
+def read_maintainers_old_():
     path_to_maintainers = {}
     maintainer_to_paths = defaultdict(list)
 
@@ -89,7 +94,60 @@ def read_maintainers():
 
     return maintainer_to_paths, path_to_maintainers
 
-def scan_issues(config):
+
+def read_maintainers():
+    path_to_maintainers = {}
+    maintainer_to_paths = defaultdict(list)
+
+    path_to_labels = {}
+    labels_to_paths = defaultdict(list)
+
+    path_to_supports = {}
+    supports_to_paths = defaultdict(list)
+
+
+    path_to_keywords = {}
+    keywords_to_paths = defaultdict(list)
+
+    bot_meta_path = '/home/adrian/src/ansible/.github/BOTMETA.yml'
+    with open(bot_meta_path, 'r') as f:
+        bot_meta_contents = f.read()
+        botmeta = botmetadata.BotMetadataParser.parse_yaml(bot_meta_contents)
+
+    files_data = botmeta['files']
+    for file_name in files_data:
+        # print('file_name: %s' % file_name)
+        file_data = files_data[file_name]
+        # special case no maintainers?
+        maintainers = file_data.get('maintainers', [])
+        path_to_maintainers[file_name] = maintainers
+
+        for maintainer in maintainers:
+            maintainer_to_paths[maintainer].append(file_name)
+
+        labels = file_data.get('labels', [])
+        path_to_labels[file_name] = labels
+
+        keywords = file_data.get('keywords', [])
+        path_to_keywords[file_name] = keywords
+
+        # for key in file_data:
+        #    if key not in ('maintainers', 'labels', 'keywords', 'maintainers_keys', 'support'):
+        #        print('%s: unknown key "%s"' % (file_name, key))
+
+    # to do, repr wrapper so we dont pformat until when and if we log
+    pf = pprint.pformat
+    log.debug('maintainer_to_paths: %s', pf(dict(maintainer_to_paths)))
+    log.debug('path_to_maintainers: %s', pf(path_to_maintainers))
+    log.debug('path_to_labels: %s', pf(path_to_labels))
+    log.debug('path_to_keyswords: %s', pf(path_to_keywords))
+
+    return maintainer_to_paths, path_to_maintainers
+    # print('botmeta:')
+    # pprint.pprint(botmeta)
+
+
+def scan_issues(config, cached_data=None):
     merge_commit = re.compile("Merge branch \S+ into ", flags=re.I)
 
     files = defaultdict(list)
@@ -111,8 +169,15 @@ def scan_issues(config):
         log.info('Scanning repo: %s', repo_name)
         repo = g.get_repo(repo_name)
 
+        pull_counter = 0
         for pull in repo.get_pulls():
-            log.info('pull.id: %s', pull.id)
+            pull_counter += 1
+            log.info('pull.url: %s (%s of N)', pull.url, pull_counter)
+            log.info('pull.id: %s (%s of N)', pull.id, pull_counter)
+
+            # FIXME: make cached_data into dict
+            if pull.url in cached_data[7]:
+                log.info('pull.url %s was in cached, updating anyway', pull.url)
             if pull.user is None:
                 login = pull.head.user.login
             else:
@@ -219,14 +284,30 @@ if __name__ == '__main__':
 
     config = get_config()
 
+    use_cache = False
+    fetch_data = True
+
+    cached_data = None
+
     if '--cached' in sys.argv:
+        use_cache = True
+        fetch_data = True
+    if '--only-cached' in sys.argv:
+        use_cache = True
+        fetch_data = False
+
+    if use_cache:
         log.info('using cached data')
         data_file_name = get_data_path(config)
         with open(data_file_name, 'r') as f:
-            data = cPickle.load(f)
+            cached_data = cPickle.load(f)
         log.info('loaded cached data')
+
+    if fetch_data:
+        data = scan_issues(get_config(), cached_data=cached_data)
     else:
-        data = scan_issues(get_config())
+        # cached_data may be none/empty
+        data = cached_data
 
     maintainer_to_prs = defaultdict(list)
 
