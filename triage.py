@@ -39,8 +39,8 @@ except ImportError:
 
 log = logging.getLogger('pr-triage')
 log_format = '%(asctime)s %(levelname)s %(name)s %(funcName)s - %(message)s'
-#logging.basicConfig(level=logging.INFO, format=log_format)
-logging.basicConfig(level=logging.DEBUG, format=log_format)
+logging.basicConfig(level=logging.INFO, format=log_format)
+#logging.basicConfig(level=logging.DEBUG, format=log_format)
 
 
 def get_config():
@@ -189,7 +189,7 @@ def scan_issues(config, cached_data=None):
             log.info('pull.id: %s (%s of N)', pull.id, pull_counter)
 
             # FIXME: make cached_data into dict
-            if pull.url in cached_data[7]:
+            if cached_data and cached_data[7] and pull.url in cached_data[7]:
                 log.info('pull.url %s was in cached, updating anyway', pull.url)
             if pull.user is None:
                 login = pull.head.user.login
@@ -207,9 +207,6 @@ def scan_issues(config, cached_data=None):
             for pull_file in pull.get_files():
                 files[pull_file.filename].append(pull)
                 dirs[os.path.dirname(pull_file.filename)].add(pull)
-
-            for label in pull.labels:
-                labels[label.name].append(pull)
 
             authors = set()
             for commit in pull.get_commits():
