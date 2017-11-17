@@ -37,10 +37,10 @@ try:
 except ImportError:
     HAS_PYRAX = False
 
-log = logging.getLogger(__name__)
+log = logging.getLogger('pr-triage')
 log_format = '%(asctime)s %(levelname)s %(name)s %(funcName)s - %(message)s'
-logging.basicConfig(level=logging.INFO, format=log_format)
-#logging.basicConfig(level=logging.DEBUG)
+#logging.basicConfig(level=logging.INFO, format=log_format)
+logging.basicConfig(level=logging.DEBUG, format=log_format)
 
 
 def get_config():
@@ -100,14 +100,13 @@ def read_maintainers():
     maintainer_to_paths = defaultdict(list)
 
     path_to_labels = {}
-    labels_to_paths = defaultdict(list)
-
-    path_to_supports = {}
-    supports_to_paths = defaultdict(list)
-
+    label_to_paths = defaultdict(list)
 
     path_to_keywords = {}
-    keywords_to_paths = defaultdict(list)
+    keyword_to_paths = defaultdict(list)
+
+    path_to_support_levels = {}
+    support_level_to_paths = defaultdict(list)
 
     bot_meta_path = '/home/adrian/src/ansible/.github/BOTMETA.yml'
     with open(bot_meta_path, 'r') as f:
@@ -127,9 +126,18 @@ def read_maintainers():
 
         labels = file_data.get('labels', [])
         path_to_labels[file_name] = labels
+        for label in labels:
+            label_to_paths[label].append(file_name)
 
         keywords = file_data.get('keywords', [])
         path_to_keywords[file_name] = keywords
+        for keyword in keywords:
+            keyword_to_paths[keyword].append(file_name)
+
+        support_levels = file_data.get('support', [])
+        path_to_support_levels[file_name] = support_levels
+        for support_level in support_levels:
+            support_level_to_paths[support_level].append(file_name)
 
         # for key in file_data:
         #    if key not in ('maintainers', 'labels', 'keywords', 'maintainers_keys', 'support'):
@@ -142,9 +150,10 @@ def read_maintainers():
     log.debug('path_to_labels: %s', pf(path_to_labels))
     log.debug('path_to_keyswords: %s', pf(path_to_keywords))
 
-    return maintainer_to_paths, path_to_maintainers
-    # print('botmeta:')
-    # pprint.pprint(botmeta)
+    return {'maintainer': maintainer_to_paths,
+            'label': label_to_paths,
+            'keyword': keyword_to_paths,
+            'support_level': support_level_to_paths}
 
 
 def scan_issues(config, cached_data=None):
@@ -157,6 +166,8 @@ def scan_issues(config, cached_data=None):
     ci_failures = defaultdict(list)
     merges = defaultdict(list)
     multi_author = defaultdict(list)
+    labels = defaultdict(list)
+
     prs = {}
 
     g = Github(client_id=config['github_client_id'],
@@ -170,6 +181,8 @@ def scan_issues(config, cached_data=None):
         repo = g.get_repo(repo_name)
 
         pull_counter = 0
+        # FIXME: build a struct/dict of the data for the new pr, snapshot it to a dir
+        #        then add it to the main dicts (files/dirs/authors etc) to avoid re-snapshotting whole list
         for pull in repo.get_pulls():
             pull_counter += 1
             log.info('pull.url: %s (%s of N)', pull.url, pull_counter)
@@ -195,6 +208,9 @@ def scan_issues(config, cached_data=None):
                 files[pull_file.filename].append(pull)
                 dirs[os.path.dirname(pull_file.filename)].add(pull)
 
+            for label in pull.labels:
+                labels[label.name].append(pull)
+
             authors = set()
             for commit in pull.get_commits():
                 authors.add(commit.commit.author.email)
@@ -209,17 +225,23 @@ def scan_issues(config, cached_data=None):
                 multi_author[login].append(pull)
 
             prs[pull.url] = pull
-            log.info('Saving data snapshot')
-            snapshot = [config, files, merges, conflicts, multi_author, ci_failures, prs, dirs]
-            with open('data/snapshot.pickle', 'w') as f:
-                cPickle.dump(snapshot, f)
+
+            if pull_counter % 100:
+                # FIXME: split this into small snapshots in a dir, so we dont have to write out the whole data every time?
+                log.info('Saving data snapshot')
+                log.info('items - config: %s, files: %s, merges: %s, conflicts: %s, multi_author: %s, ci_failures: %s, prs: %s, dirs: %s, labels: %s',
+                         len(config), len(files), len(merges), len(conflicts), len(multi_author), len(ci_failures), len(prs), len(dirs), len(labels))
+
+                snapshot = [config, files, merges, conflicts, multi_author, ci_failures, prs, dirs, labels]
+                with open('data/snapshot.pickle', 'w') as f:
+                    cPickle.dump(snapshot, f)
 
     usersbypulls = OrderedDict()
     for user, pulls in sorted(users.items(),
                               key=lambda t: len(t[-1]), reverse=True):
         usersbypulls[user] = pulls
 
-    a = [config, files, usersbypulls, merges, conflicts, multi_author, ci_failures, prs, dirs]
+    a = [config, files, usersbypulls, merges, conflicts, multi_author, ci_failures, prs, dirs, labels]
 
     data_file_name = get_data_path(config)
     log.info('saving data to %s', data_file_name)
@@ -227,12 +249,14 @@ def scan_issues(config, cached_data=None):
     with open(data_file_name, 'w') as f:
         cPickle.dump(a, f)
 
-    return (config, files, usersbypulls, merges, conflicts, multi_author,
-            ci_failures, prs, dirs)
+    return [config, files, usersbypulls, merges, conflicts, multi_author,
+            ci_failures, prs, dirs, labels]
 
 
 def write_html(config, files, users, merges, conflicts, multi_author,
-               ci_failures, prs, dirs, maintainers):
+               ci_failures, prs, dirs, maintainers, labels, keywords, support_levels):
+    log.info('About to write_html')
+
     if config.get('use_rackspace', False):
         if not HAS_PYRAX:
             raise SystemExit('The pyrax python module is required to use '
@@ -253,7 +277,8 @@ def write_html(config, files, users, merges, conflicts, multi_author,
 
     templates = ['index', 'byfile', 'bydir', 'byuser',
                  'bymergecommits', 'bymaintainer',
-                 'byconflict', 'bymultiauthor', 'bycifailures']
+                 'byconflict', 'bymultiauthor', 'bycifailures',
+                 'bylabel', 'bykeyword', 'bysupportlevel']
 
     for tmplfile in templates:
         now = datetime.utcnow()
@@ -267,16 +292,48 @@ def write_html(config, files, users, merges, conflicts, multi_author,
                                    multi_author=multi_author,
                                    ci_failures=ci_failures,
                                    maintainers=maintainers,
+                                   labels=labels,
+                                   keywords=keywords,
+                                   support_levels=support_levels,
                                    title=config['title'],
                                    now=now, **classes)
 
-        with open('htmlout/%s.html' % tmplfile, 'w+b') as f:
+        html_filename = 'htmlout/%s.html' % tmplfile
+        log.info('writing rendered html to %s', html_filename)
+        with open(html_filename, 'w+b') as f:
             f.write(rendered.encode('ascii', 'ignore'))
 
         if config.get('use_rackspace', False):
             cont.upload_file('htmlout/%s.html' % tmplfile,
                              obj_name='%s.html' % tmplfile,
                              content_type='text/html')
+
+
+def paths_to_prs(key, paths, files, dirs):
+    prs = set([])
+    for path in paths:
+        prs.update(files.get(path, []))
+        prs.update(dirs.get(path, []))
+    return prs
+
+
+def build_maps_to_prs(issue_data, maintainer_map):
+    files = issue_data[1]
+    dirs = issue_data[8]
+
+    to_prs_map = {}
+    for map_type in maintainer_map:
+        type_to_pr_map = {}
+        for key, paths in maintainer_map[map_type].items():
+            # log.info('key: %s', key)
+            prs = paths_to_prs(key, paths, files, dirs)
+            type_to_pr_map[key] = prs
+            # log.info('prs: %s', prs)
+
+        to_prs_map[map_type] = type_to_pr_map
+
+    # log.info('to_prs_map: %s', pprint.pformat(to_prs_map))
+    return to_prs_map
 
 
 if __name__ == '__main__':
@@ -311,26 +368,16 @@ if __name__ == '__main__':
 
     maintainer_to_prs = defaultdict(list)
 
-    maintainer_to_paths, path_to_maintainers = read_maintainers()
+    botmeta_map = read_maintainers()
+    other_data = build_maps_to_prs(data, botmeta_map)
 
-    for key, value in maintainer_to_paths.items():
-        print key, value
+    # for key, value in maintainer_to_paths.items():
+    #    print key, value
 
-    for maintainer, paths in maintainer_to_paths.items():
-        prs = set([])
-        for path in paths:
-            prs.update(data[1].get(path, []))
-            prs.update(data[8].get(path, []))
-        maintainer_to_prs[maintainer] = prs
-
-    data.append(maintainer_to_prs)
-
-    #files = data[1]
-    #pp(files)
-    #pp(files,collapse_duplicates=True)
-
-    #for file_path,value in files.items():
-    #    pp(file_path)
-    #    print(value)
+    # log.info('other_data[maintainer]: %s', pprint.pformat(other_data['maintainer']))
+    data.append(other_data['maintainer'])
+    data.append(other_data['label'])
+    data.append(other_data['keyword'])
+    data.append(other_data['support_level'])
 
     write_html(*data)
